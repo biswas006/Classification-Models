@@ -18,8 +18,63 @@ Prediction of physical activity Table 1. from tri-axial data recorded by acceler
 ## Data and Tools
 Since the data set is huge, this project used 500 randomly sampled labelled data from each label for testing and training purposes. This was to ensure that the model was trained to recognize each label irrespective of its imbalance in the original data set. Overall, 3,000 labeled sampled data set was used for further processing. Furthermore, the random sample (500 data) was extracted from the unlabeled dataset for prediction and comparison between supervised and unsupervised classifiers
 
-![Original and sampled dataset](https://github.com/biswas006/Classification-Models-for-Activity-Recognition-/blob/main/Original%20and%20sampled%20balanced%20dataset.png)
+![Original and balanced dataset](https://github.com/biswas006/Classification-Models/blob/main/Snapshots%20and%20Pics/Original%20and%20sampled%20balanced%20dataset.png)
 
-# Raw Data Attributes
-id, action, timestamp, x-acceleration (ax), y-acceleration (ay), and z-acceleration (az)  
+### Raw Data Attributes
+id, action, timestamp, x-acceleration (ax), y-acceleration (ay), and z-acceleration (az) 
+
+![variations](https://github.com/biswas006/Classification-Models/blob/main/Snapshots%20and%20Pics/Signal%20variations.png)
+
+### Tools 
+The study used R-studio and Weka for data pre-processing, feature selection, manipulation, and implementation of different clustering techniques and building supervised as well as unsupervised machine learning models for prediction.
+
+## Data pre-processing and Feature description
+The datasets were cleaned and updated, including adding a sequence number and removing unwanted semicolons from the z-acceleration column. Rows with NA values were removed, accounting for only 0.82% of the dataset, which was deemed negligible. It was further checked for any NA values before being arranged as per increasing order of timestamp and id.
+
+![Block diagram](https://github.com/biswas006/Classification-Models/blob/main/Snapshots%20and%20Pics/Block%20Diagram.png)
+
+The cleaned data was visualized, before adding derived features and modeling. Below is the representation of signal variations for a person (id-194) to understand the signal fluctuations during different activities.
+
+![signal variations 194](https://github.com/biswas006/Classification-Models/blob/main/Snapshots%20and%20Pics/Signal%20variations%20id-194.png)
+
+## Feature Enginnering
+Multiple features were derived and extracted based on literature reviews and references. Since, it was a time series data multiple features were derived from time-domain and frequency domain. 
+
+Some of the features were Resultant (amag), Low pass filter components of axes (lax, lay, laz), Low pass filter components for resultant (lamag), High pass filter components of axes (hax, hay, haz), High pass filter components of resultant (hamag), Zero-cross components (zcs components), Peak-to-peak components (p2p components), Root mean square components (RMS components), Kurtosis components (kur components), Skewness components (skw components), Crest factor component (cf components),Root mean square inverse difference velocity component (Vrms components), and Entropy components (ent components). Refer for details in the report.
+
+## Algorithms and its implementation
+The supervised machine learning models were used for generating the prediction models. The labeled dataset was used to train the model, and then it predicts activities for the test data-set. The study used popular algorithms such as Naïve Bayes, decision trees, support vector machines(SVM), multinomial logistic regression and random forest to check the performance of the models.
+
+## Clustering (Unsupervised machine learning)
+K-Means clustering and artificial neural network based clustering technique Self-organizing Maps (SOM) were implemented.
+
+![Kmeans](https://github.com/biswas006/Classification-Models/blob/main/Snapshots%20and%20Pics/K6.png)
+
+##  Performance metrics
+Accuracy, Kappa, Confusion Matrix, Precision, Recall, F1 Score were checked for all the models for different train-test datasets.
+
+## Results and Discussion
+Almost all the sepervised learning models performed over 95% accuracy and other metrics, the Multinomial Logistic Regression performed the best. Unsupervised models could not match up the levels as expected and SOM performed better than K-means.
+
+![Results](https://github.com/biswas006/Classification-Models/blob/main/Snapshots%20and%20Pics/Model%20Performance.png)
+
+Classification similarity of Supervised and un-supervised models on un-labelled random dataset 
+
+![Similarity comparisions](https://github.com/biswas006/Classification-Models/blob/main/Snapshots%20and%20Pics/Similarity%20comparision.png)
+
+## Conclusion and Future Work
+The supervised models seems to work far better and more accurately on the data set when compared with unsupervised ones.
+
+This was expected as supervised models had learnt from the sample data to achieve high accuracy. Moreover, the special attention was given to avoid class imbalance while learning, which also helped the supervised models to achieve very high performance metrics.
+
+The results show that supervised learning models had a low agreement with the unsupervised models. Therefore, further work is required in the future to check for improvement of the efficiency of these clustering techniques. In addition, there could be a possibility that different features selection for supervised and unsupervised learning can lead to a different result.
+
+
+
+
+
+
+
+
+
 
