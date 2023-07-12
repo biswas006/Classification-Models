@@ -1,0 +1,1232 @@
+---
+title: "Smart_watch_thesis_R4"
+author: "Biswas"
+date: "2/20/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(corrplot)
+library(dplyr)
+library(kknn)
+library(MASS)
+library(glmnet)
+library(ggplot2)
+library(scales)
+library(nnet)
+library(e1071)
+library(caTools)
+library(caret) # for confusion matrix
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(data.table)
+library(entropy)
+library(signal)
+library(dplyr)
+library(RColorBrewer)
+library(pROC)
+```
+
+
+# Details of features given in dataset used for training and testing models 
+
+The raw data contains the following 6 (six) features:
+
+id:  These represents the users on whom data was recorded for various activities.
+
+action : It represent the activities that the user were performing. It is used to label the dataset, There are altogether 6 activities (Walking, Jogging, Sitting, Standing, Upstairs,Downstairs)in the dataset. 
+
+timestamp : It represnt the time at which the activity was recorded. The sampling rate is 20Hz (1 sample every 50ms).
+
+x-acceleration (ax): The acceleration in the x direction as measured by the android phone's accelerometer in m/(s^2). The acceleration recorded includes gravitational acceleration toward the center of the Earth, so that when the phone is at rest on a flat surface the vertical axis will register +-10.
+
+y-acceleration (ay): The acceleration in the y direction as measured by the android phone's accelerometer in m/(s^2)
+
+z-acceleration(az): The acceleration in the z direction as measured by the android phone's accelerometer in m/(s^2)
+
+sn (added): It represents the serial number 
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+#Downloading dataset labelled raw data 
+raw_data<-read.csv("WISDM_at_v2.0_raw.txt", header = TRUE,stringsAsFactors=F)
+
+#dataset dimension
+dim(raw_data)
+
+
+
+head(raw_data)
+
+unique(raw_data$Walking)
+
+## Data Preprocessing 
+#renaming the dataset 
+
+pre_process<-function(raw_data){
+colnames(raw_data)<-c("id","action","timestamp","ax","ay","az")
+
+
+# adding serial number sn and bringing it to front
+raw_data$nseq<-seq(1,nrow(raw_data),1)
+raw_data<- raw_data %>% 
+  relocate(nseq)
+
+
+sapply(raw_data,class)
+
+#removing unwanted semicolon from the z-accel
+raw_data$az <- gsub(";$", "", raw_data$az)
+
+raw_data$az<-as.numeric(raw_data$az)
+
+#dataset dimension
+dim(raw_data)
+
+# checking any Na in dataset 
+any(is.na(raw_data))
+
+
+#emit rows with Na values
+raw_data<-raw_data[complete.cases(raw_data), ]
+
+any(is.na(raw_data)) # False 
+
+#arrange vale in ascending order with Timestamp and user 
+
+
+
+raw_data <-raw_data %>% arrange(raw_data$id,raw_data$timestamp)
+
+
+#checking classes 
+unique(raw_data$action)
+
+# Total no. of users 
+length(unique(raw_data$id))
+
+# no of Activities for each class
+Class_count<-table(as.factor(raw_data$action))
+barplot(Class_count,col=c("red","green","blue","pink","yellow","darkgreen"),main = "Action or Activities")
+
+
+
+
+head(raw_data)
+
+
+#resetting names for easy recall
+nseq<-raw_data$nseq
+ax<-raw_data$ax
+ay<-raw_data$ay
+az<-raw_data$az
+action<-raw_data$action
+id<-raw_data$id
+df<-data.frame(nseq,ax,ay,az,action,id)
+
+# into data-table 
+dat<-setDT(df) 
+return(dat)
+}
+  
+df<-pre_process(raw_data)
+table(df$action)
+
+Class_count_df<-table(as.factor(df$action))
+plot(Class_count_df,col=c("red","green","blue","pink","orange","darkgreen"),main = "Activities in labelled dataset", ylab = "number of dataset")
+
+activities<-unique(df$action)
+
+for (i in 1:length(activities)){
+  data194<- df[df$id ==194& df$action == activities[i],][200:400,]
+  plot(y = data194$ax, x = data194$nseq, data = data194,main = paste( activities[i]),col="red",ylim = range(data194$ax,data194$ay,data194$az),type = "l", xlab = "Sequence", ylab = "axis values")
+  lines(y = data194$ay, x = data194$nseq, data = data194,col="blue")
+  lines(y = data194$az, x = data194$nseq, data = data194,col="green")
+  legend("topright", legend=c("X-axis", "Y-axis","Z-axis"),
+       col=c("red", "blue","green"), lty=1:2, cex=0.8)
+}
+unique(df$id)
+tab<-with(df,table(as.factor(df$action) ,as.factor(df$id)))
+#coul <- brewer.pal(5, "Set2") 
+barplot(tab,beside=TRUE, legend=TRUE,main="Activity breakdown",xlab = "Id(person)",ylab = "count(50ms each)")
+
+```
+# Adding features like Resultant
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+features_add<-function(df){
+
+#Factorizing activity and user
+df$action<-as.factor(df$action)
+df$id<-as.factor(df$id)
+df$amag<- sqrt((df$ax^2) + (df$ay^2) +(df$az^2))
+
+return(df)}
+df<-features_add(df)
+head(df)
+```
+
+# Using butterworth filter to extract low and high frequency components 
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+features_add2<-function(df){
+
+cutoffHZ <- 3
+sampleHz <- 20
+nyqHZ = sampleHz/2 
+f <- butter(4, cutoffHZ/nyqHZ) 
+
+#create lowfreq components 
+df[,c('lax', 'lay', 'laz', 'lamag') := 
+       lapply(.(ax, ay, az, amag), function(x) (filtfilt(f, x)))]
+
+
+#Now  high frequency components (freq - Low freq)
+df$hax <- df$ax - df$lax
+df$hay <- df$ay - df$lay
+df$haz<-df$az - df$laz
+df$hamag <-df$amag-df$lamag
+
+
+return(df)}
+
+df<-features_add2(df)
+head(df)
+
+```
+
+Since the data (2.9 Mn records) is too large it is taking hours to process. I have therefore, extracted 25,000 data (randomly) for training and testing purpose.The randomness is to ensure similar data distribution in the sample as well.
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+no_users<-unique(df$id)  # no. of users
+length(no_users)
+
+tab<-table(df$id)
+barplot(tab)
+
+id_10<-sort(tab,decreasing = T)[1:10]
+
+df_id_10<-as.data.frame(id_10)
+
+barplot(df_id_10$Freq,
+main = "Top 10 IDs with maximum observations",
+xlab = "Total Count",
+ylab = "ID",
+names.arg = df_id_10$Var1,
+col = "darkred",
+horiz = F)
+```
+
+Since the dataset for the top 10 IDs was high and class imbalance was present, I took 3000 data evenly sampled from all the activities.
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+d<-as.numeric(as.character(df_id_10$Var1))
+d10<-df[df$id==d,]
+
+#sum(df_id_10$Freq)
+
+# no of Activities for each class in top 10 Ids
+Class_count_d10<-table(as.factor(d10$action))
+barplot(Class_count_d10,col=c("red","green","blue","pink","yellow","darkgreen"),main = "Action or Activities in top 10 Ids")
+```
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+## set the seed to make your partition reproducible
+# Random 25,000 data for train and test 
+set.seed(12345)
+smp_size<-500 # for each activity 
+
+dim(df)
+
+df_Standing<-df[df$action=="Standing",]
+df_Standing_S<-sample_n(df_Standing, smp_size)
+
+df_Sitting<-df[df$action=="Sitting",]
+df_Sitting_S<-sample_n(df_Sitting, smp_size)
+
+df_Stairs<-df[df$action=="Stairs",]
+df_Stairs_S<-sample_n(df_Stairs, smp_size)
+
+df_LyingDown<-df[df$action=="LyingDown",]
+df_LyingDown_S<-sample_n(df_LyingDown, smp_size)
+
+df_Walking<-df[df$action=="Walking",]
+df_Walking_S<-sample_n(df_Walking, smp_size)
+
+df_Jogging<-df[df$action=="Jogging",]
+df_Jogging_S<-sample_n(df_Jogging, smp_size)
+
+
+sample_data <-bind_rows(df_Standing_S,df_Sitting_S,df_Stairs_S,df_LyingDown_S,df_Walking_S,df_Jogging_S)
+  
+
+# no of Activities for each class
+Class_count<-table(as.factor(sample_data $action))
+plot(Class_count,col=c("red","green","blue","pink","orange","darkgreen"),main = "Activities in 3,000 sampled data",ylab = "No. of data",xlab = "Activities")
+
+data<-sample_data
+
+data_unsupervised<-sample_data
+
+
+```
+
+This data set will be good for model learning as there will be no class imbalance. 
+
+#Feature extraction :
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+feature.extract <- function (dt) {  
+  #utililty functions feature extraction
+  
+  zerocross <- function (x) { return (sum(diff(sign(x)) != 0)) }
+  peak2peak <- function (x) { return (max(x) - min(x)) }
+  rms <- function (x) { return (sqrt(mean(x^2))) }
+  #center and subset relevant cols
+  dt[, c("lax", "lay", "laz","hax", "hay","haz","lamag", "hamag") :=
+       lapply(.(lax, lay, laz, hax, hay, haz, lamag, hamag), scale, center=T, scale=F)]
+  dts <- dt[ ,.(lax, lay, laz, hax, hay, haz, lamag, hamag)] 
+  #names of all time series
+  namevec <- names(dts)
+  #mean
+  means <- lapply(dts, mean)
+  names(means) <- lapply(namevec, paste0, ".avg" )
+  #stdev
+  sds <- lapply(dts, sd)
+  names(sds) <- lapply(namevec, paste0, ".sd" )
+  #zero crossings
+  zcs <- lapply(dts, zerocross)
+  names(zcs) <- lapply(namevec, paste0, ".zc" )
+  #peak2peak
+  p2p <- lapply(dts, peak2peak)
+  names(p2p) <- lapply(namevec, paste0, ".p2p" )
+  #rms
+  rmsvec <- lapply(dts, rms)
+  names(rmsvec) <- lapply(namevec, paste0, ".rms" )
+  #kurtosis
+  kurt <- lapply(dts, kurtosis)
+  names(kurt) <- lapply(namevec, paste0, ".kur" )
+  #skew
+  skew <- lapply(dts, skewness)
+  names(skew) <- lapply(namevec, paste0, ".skw" )
+  #crest factor (peak/rms)
+  cfvec <-mapply(`/`, lapply(dts, max), rmsvec)  
+  names(cfvec) <- lapply(namevec, paste0, ".cf" )
+  #rms for velocity 
+  rmsvec.vel <- lapply(dts, function (x) rms(diffinv(as.vector(x))) )
+  names(rmsvec.vel) <- lapply(namevec, paste0, ".Vrms" )
+  #entropy
+  entr <- lapply(dts, function(x) entropy(discretize(x, numBins = 10 )))
+  names(entr) <- lapply(namevec, paste0, ".ent" )
+  #correct label
+  label <- dt[1, action]
+  names(label) <- "label"
+  return ( c(zcs, p2p, rmsvec, kurt, skew, cfvec, rmsvec.vel, entr, label) )  
+}
+#sliding window parameters
+
+features_add3<-function(data){
+winsecs = 2.0 #window length in seconds
+sampleHz <- 20
+winsize = sampleHz*winsecs 
+overlap = .05 
+ix = 1
+hop = round(winsize * overlap)
+#pre allocate feature object, aprox size
+ffrows <- round(nrow(data)/(winsize*overlap))
+nfeat <- length( feature.extract (data[1:(1 + winsize), ]) )
+#feature dt
+fdt <- data.table(matrix(data = 0.0, nrow = ffrows, ncol = nfeat) )
+names(fdt) <- names( feature.extract (data[1:(1+ winsize), ]) )
+
+ix <- 1  #index for time series
+rx <- 1L #index for feature dt
+while ((ix) <= nrow(data)-winsize ) {
+  #ensure whole window has the same action label
+  if (data[ix, action] == data[ix + winsize, action] ) {
+    #extract and load into fdt
+    set(fdt,rx, 1:nfeat, feature.extract(data[ix:(ix + winsize), ]) )
+    rx = rx + 1L
+    #move to next window
+    ix <- ix + hop
+  } else {
+      ix <- ix + 1
+  }
+}
+#remove few extra rows created during prealloc
+fdt <- fdt[lax.p2p  != 0,]
+#make label into factor for fdt
+fdt[,label := factor(label) ]
+return(fdt)}
+
+fdt<-features_add3(data)
+
+```
+
+Following set of features has been extracted : 
+Mean (Average value), standard deviation ,zero crossings (changing sign), peak2peak(difference between maximum and minimum), 
+peak to peak, RMS(root mean square), kurtosis (measure of combined weight of a distribution's tails relative to the center of the distribution),skewness, crest factor (peak/rms), RMS for velocity, entropy. 
+
+The details and importance of these features shall be highlighted in the thesis.
+
+These features were extracted from the sliding window of 2.0 sec with an overlap of 0.05 sec. The sampling frequency is 20Hz.
+
+Reference : Human Activity Recognition from Accelerometer (Datahttps://rstudio-pubs-static.s3.amazonaws.com/165795_92b97c49b5a74d04940670469a9a40f2.html) used to understand and implementation of feature extraction mechanism. The part of codes (feature extraction) has been taken from the same.
+
+# 1. Training and Test data 
+
+Train data : 90%,80%,70%
+Test data : 10%,20%,30%
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+# saving as dataframe
+data<-as.data.frame(fdt)
+data$label<-as.factor(data$label) 
+
+##90% of the sample size
+smp_size90 <- floor(0.90 * nrow(data))
+
+## set the seed to make your partition reproducible
+set.seed(12345)
+train_ind90 <- sample(seq_len(nrow(data)), size = smp_size90)
+
+train_90 <- data[train_ind90, ]
+test_10 <- data[-train_ind90, ]
+
+
+##80% of the sample size
+smp_size80 <- floor(0.80 * nrow(data))
+
+## set the seed to make your partition reproducible
+set.seed(12345)
+train_ind80 <- sample(seq_len(nrow(data)), size = smp_size80)
+
+train_80 <- data[train_ind80, ]
+test_20 <- data[-train_ind80, ]
+
+##70% of the sample size
+smp_size70 <- floor(0.70 * nrow(data))
+
+## set the seed to make your partition reproducible
+set.seed(12345)
+train_ind70 <- sample(seq_len(nrow(data)), size = smp_size70)
+
+train_70 <- data[train_ind70, ]
+test_30 <- data[-train_ind70, ]
+```
+
+
+
+
+
+
+# Supervised Learning Models 
+
+## 1. Random Forest Model 
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+#model on  training the model 
+
+#sapply(train,class)
+
+
+
+R_forest<-function(train,test){
+
+Initial_trees_vector<- c(10,100,200,300,400,500,600,700,800,900)
+mr_RF_train<-c(length=10)
+Cm_RF_train  <- list()
+mr_RF_test<-c(length=10)
+Cm_RF_test <- list()
+for (i in 1:10){
+
+fit_RF <- randomForest(label ~  ., data = train, importance = T, ntree=Initial_trees_vector[i])
+
+# predicting on train data 
+pred_RF_train<- predict(fit_RF,type = "response",newdata =train)
+tab_RF_train<-table(train$label, pred_RF_train)
+
+#Mis-Classification rate 
+mr_RF_train[i]<- sum(diag(tab_RF_train)) / sum(tab_RF_train)
+#Confusion matrix 
+Cm_RF_train[[i]]<- confusionMatrix(train$label,pred_RF_train)
+###########################################################################################################
+# predicting on test data 
+pred_RF_test<- predict(fit_RF,type = "response",newdata =test)
+tab_RF_test<-table(test$label, pred_RF_test)
+
+#Mis-Classification rate
+mr_RF_test[i]<- sum(diag(tab_RF_test)) / sum(tab_RF_test)
+#Confusion matrix 
+
+Cm_RF_test[[i]]<- confusionMatrix(test$label,pred_RF_test)
+
+}
+
+
+# performance wrt number of trees on test output
+par(mar = c(5, 5, 3, 5)) #size of plot
+#plot(Initial_trees_vector,Misclassification_error_train_ada,xlab)
+plot(x=Initial_trees_vector,y=mr_RF_train,
+     xlab = "No. of Trees",ylab = "Error rate ",type="l",col="red",
+     main = "Random Forest: Misclassification rate against no.of trees",ylim = c(min(mr_RF_test),max(mr_RF_train)))
+
+par(new = TRUE) # for combining two plots
+plot(mr_RF_test,col="blue",type = "l",xaxt = "n",
+     yaxt = "n",ylab = " ", xlab = "",ylim = c(min(mr_RF_test),max(mr_RF_train)))
+axis(side = 4)
+mtext("Error rate ", side = 4, line = 3);
+legend("bottomright", c("train data", "test data"),
+       col = c("red", "blue"), lty = c(1, 2)) # Indexing the plot at top right position
+
+
+# number of tree selection : Which has the maximum accuracy 
+
+ntree_final<-Initial_trees_vector[which(mr_RF_test==max(mr_RF_test))[1]] 
+
+#Final Model 
+fit_RF_final <- randomForest(label ~  ., data = train, importance = T, ntree=ntree_final)
+
+# Final Model prediction on Test data 
+pred_RF_test_final<- predict(fit_RF_final,type = "response",newdata =test)
+
+# Confusion matrix for Final model on test data 
+Cm_RF_test_Final<- confusionMatrix(test$label,pred_RF_test_final, mode = "everything", positive="1")
+
+roc_RF <- roc(as.numeric(test$label),as.numeric(pred_RF_test_final))
+
+# calculate area under curve
+auc_RF<-auc(roc_RF )
+
+
+#Confusion matrix for Final model on test data 
+
+return(list(model=fit_RF_final,Confusion_mat=Cm_RF_test_Final,AUC=auc_RF))
+}
+
+#Creating a generic function
+CM_plot<- function(input){
+  
+  g_plot <- ggplot(data = as.data.frame(input$Confusion_mat$table) ,
+           aes(x = Reference, y = Prediction)) +
+           geom_tile(aes(fill = log(Freq)), colour = "white") +
+           scale_fill_gradient(low = "white", high = "Green") +
+           geom_text(aes(x = Reference, y = Prediction, label = Freq)) +
+           theme(legend.position = "none") +
+           ggtitle( paste(" Confusion Matrix : Accuracy", percent_format()(input$Confusion_mat$overall[1]),
+            ", Kappa", percent_format()(input$Confusion_mat$overall[2])))
+  return(g_plot)
+}
+
+
+# 90% Train, 10% test data 
+output_RF_90_10<-R_forest(train_90,test_10)
+model_RF_90_10<-output_RF_90_10[1]
+#model 
+model_RF_90<-model_RF_90_10$model
+Cm_RF_test_10_Final<-output_RF_90_10[2]
+CM_plot(Cm_RF_test_10_Final)
+Cm_RF_test_10_Final
+#AUC 
+output_RF_90_10[3]
+
+# 80% Train, 20% test data 
+output_RF_80_20<-R_forest(train_80,test_20)
+model_RF_80_20<-output_RF_80_20[1]
+#model 
+model_RF_80<-model_RF_80_20$model
+Cm_RF_test_20_Final<-output_RF_80_20[2]
+CM_plot(Cm_RF_test_20_Final)
+Cm_RF_test_20_Final
+# AUC
+output_RF_80_20[3]
+
+# 70% Train, 30% test data 
+output_RF_70_30<-R_forest(train_70,test_30)
+model_RF_70_30<-output_RF_70_30[1]
+#model 
+model_RF_70<-model_RF_70_30$model
+Cm_RF_test_30_Final<-output_RF_70_30[2]
+CM_plot(Cm_RF_test_30_Final)
+Cm_RF_test_30_Final
+#AUC
+output_RF_70_30[3]
+```
+
+## 2. Decision Tree Model 
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+DT<-function(train,test){
+  
+  
+fit_DT <- rpart(label~., data = train, method = 'class')
+
+rpart.plot(fit_DT)
+
+pred_DT_train<-predict(fit_DT, train, type = 'class')
+tab_DT_train<-table(train$label, pred_DT_train)
+
+#Misclassificatioin rate 
+mr_DT_train<- sum(diag(tab_DT_train)) / sum(tab_DT_train)
+mr_DT_train
+
+#Confusion matrix 
+
+Cm_DT_train <- confusionMatrix(train$label,pred_DT_train)
+
+
+# DT model on test data 
+
+pred_DT_test<-predict(fit_DT, test, type = 'class')
+tab_DT_test<-table(test$label, pred_DT_test)
+
+#Misclassificatioin rate 
+mr_DT_test<- sum(diag(tab_DT_test)) / sum(tab_DT_test)
+mr_DT_test
+
+#Confusion matrix 
+
+Cm_DT_test <- confusionMatrix(test$label,pred_DT_test, mode = "everything", positive="1")
+# create roc curve
+roc_DT <- roc(as.numeric(test$label),as.numeric(pred_DT_test))
+
+# calculate area under curve
+auc_DT<-auc(roc_DT )
+
+return(list(model=fit_DT,Confusion_mat=Cm_DT_test ,AUC=auc_DT))
+}
+
+#Creating a generic function
+CM_plot<- function(input){
+  
+  g_plot <- ggplot(data = as.data.frame(input$Confusion_mat$table) ,
+           aes(x = Reference, y = Prediction)) +
+           geom_tile(aes(fill = log(Freq)), colour = "white") +
+           scale_fill_gradient(low = "white", high = "Green") +
+           geom_text(aes(x = Reference, y = Prediction, label = Freq)) +
+           theme(legend.position = "none") +
+           ggtitle( paste(" Confusion Matrix : Accuracy", percent_format()(input$Confusion_mat$overall[1]),
+            ", Kappa", percent_format()(input$Confusion_mat$overall[2])))
+  return(g_plot)
+}
+
+
+# 90% Train, 10% test data 
+output_DT_90_10<-DT(train_90,test_10)
+model_DT_90_10<-output_DT_90_10[1]
+#model 
+model_DT_90<-model_DT_90_10$model
+#Saving the best performing model 
+saveRDS(model_DT_90, file = "model_DT_90.rda")
+
+Cm_DT_test_10_Final<-output_DT_90_10[2]
+CM_plot(Cm_DT_test_10_Final)
+Cm_DT_test_10_Final
+
+# AUC 
+output_DT_90_10[3]
+
+# 80% Train, 20% test data 
+output_DT_80_20<-DT(train_80,test_20)
+model_DT_80_20<-output_DT_80_20[1]
+#model 
+model_DT_80<-model_DT_80_20$model
+Cm_DT_test_20_Final<-output_DT_80_20[2]
+CM_plot(Cm_DT_test_20_Final)
+Cm_DT_test_20_Final
+# AUC 
+output_DT_80_20[3]
+
+# 70% Train, 30% test data 
+output_DT_70_30<-DT(train_70,test_30)
+model_DT_70_30<-output_DT_70_30[1]
+#model 
+model_DT_70<-model_DT_70_30$model
+Cm_DT_test_30_Final<-output_DT_70_30[2]
+CM_plot(Cm_DT_test_30_Final)
+Cm_DT_test_30_Final
+# AUC 
+output_DT_70_30[3]
+```
+
+## 3. Naive Bayes Model
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+NB<-function(train,test){
+fit_NB <- naiveBayes(label~., data = train, method = 'class')
+
+
+pred_NB_train<-predict(fit_NB, train, type = 'class')
+tab_NB_train<-table(train$label, pred_NB_train)
+
+#Misclassificatioin rate 
+mr_NB_train<- sum(diag(tab_NB_train)) / sum(tab_NB_train)
+mr_NB_train
+
+#Confusion matrix 
+
+Cm_NB_train <- confusionMatrix(train$label,pred_NB_train, mode = "everything", positive="1")
+
+
+
+# NB model on test data 
+
+pred_NB_test<-predict(fit_NB, test, type = 'class')
+tab_NB_test<-table(test$label, pred_NB_test)
+
+#Misclassificatioin rate 
+mr_NB_test<- sum(diag(tab_NB_test)) / sum(tab_NB_test)
+mr_NB_test
+
+#Confusion matrix 
+
+Cm_NB_test <- confusionMatrix(test$label,pred_NB_test, mode = "everything", positive="1")
+
+# create roc curve
+roc_NB <- roc(as.numeric(test$label),as.numeric(pred_NB_test))
+
+# calculate area under curve
+auc_NB<-auc(roc_NB)
+
+return(list(model=fit_NB,Confusion_mat=Cm_NB_test ,AUC=auc_NB))
+}
+
+#Creating a generic function
+CM_plot<- function(input){
+  
+  g_plot <- ggplot(data = as.data.frame(input$Confusion_mat$table) ,
+           aes(x = Reference, y = Prediction)) +
+           geom_tile(aes(fill = log(Freq)), colour = "white") +
+           scale_fill_gradient(low = "white", high = "Green") +
+           geom_text(aes(x = Reference, y = Prediction, label = Freq)) +
+           theme(legend.position = "none") +
+           ggtitle( paste(" Confusion Matrix : Accuracy", percent_format()(input$Confusion_mat$overall[1]),
+            ", Kappa", percent_format()(input$Confusion_mat$overall[2])))
+  return(g_plot)
+}
+
+# 90% Train, 10% test data 
+output_NB_90_10<-NB(train_90,test_10)
+model_NB_90_10<-output_NB_90_10[1]
+#model 
+model_NB_90<-model_NB_90_10$model
+Cm_NB_test_10_Final<-output_NB_90_10[2]
+CM_plot(Cm_NB_test_10_Final)
+Cm_NB_test_10_Final
+# AUC 
+output_NB_90_10[3]
+
+# 80% Train, 20% test data 
+output_NB_80_20<-NB(train_80,test_20)
+model_NB_80_20<-output_NB_80_20[1]
+#model 
+model_NB_80<-model_NB_80_20$model
+Cm_NB_test_20_Final<-output_NB_80_20[2]
+CM_plot(Cm_NB_test_20_Final)
+Cm_NB_test_20_Final
+# AUC 
+output_NB_80_20[3]
+
+# 70% Train, 30% test data 
+output_NB_70_30<-NB(train_70,test_30)
+model_NB_70_30<-output_NB_70_30[1]
+#model 
+model_NB_70<-model_NB_70_30$model
+Cm_NB_test_30_Final<-output_NB_70_30[2]
+CM_plot(Cm_NB_test_30_Final)
+Cm_NB_test_30_Final
+#AUC
+output_NB_70_30[3]
+```
+
+## 4. SVM Model
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+svm_model<-function(train,test){
+fit_svm <- svm(label~., data = train, method = 'class')
+
+
+pred_svm_train<-predict(fit_svm, train, type = 'class')
+tab_svm_train<-table(train$label, pred_svm_train)
+
+#Misclassificatioin rate 
+mr_svm_train<- sum(diag(tab_svm_train)) / sum(tab_svm_train)
+mr_svm_train
+
+#Confusion matrix 
+
+Cm_svm_train <- confusionMatrix(train$label,pred_svm_train, mode = "everything", positive="1")
+
+
+# NB model on test data 
+
+pred_svm_test<-predict(fit_svm, test, type = 'class')
+tab_svm_test<-table(test$label, pred_svm_test)
+
+#Misclassificatioin rate 
+mr_svm_test<- sum(diag(tab_svm_test)) / sum(tab_svm_test)
+mr_svm_test
+
+#Confusion matrix 
+
+Cm_svm_test <- confusionMatrix(test$label,pred_svm_test, mode = "everything", positive="1")
+
+# create roc curve
+roc_SVM <- roc(as.numeric(test$label),as.numeric(pred_svm_test))
+
+# calculate area under curve
+auc_SVM<-auc(roc_SVM)
+
+
+
+return(list(model=fit_svm,Confusion_mat=Cm_svm_test,AUC=auc_SVM ))
+}
+
+# 90% Train, 10% test data 
+output_SVM_90_10<-svm_model(train_90,test_10)
+model_SVM_90_10<-output_SVM_90_10[1]
+#model 
+model_SVM_90<-model_SVM_90_10$model
+Cm_SVM_test_10_Final<-output_SVM_90_10[2]
+CM_plot(Cm_SVM_test_10_Final)
+Cm_SVM_test_10_Final
+#AUC
+output_SVM_90_10[3]
+
+
+# 80% Train, 20% test data 
+output_SVM_80_20<-svm_model(train_80,test_20)
+model_SVM_80_20<-output_SVM_80_20[1]
+#model 
+model_SVM_80<-model_SVM_80_20$model
+Cm_SVM_test_20_Final<-output_SVM_80_20[2]
+CM_plot(Cm_SVM_test_20_Final)
+
+Cm_SVM_test_20_Final
+#AUC
+output_SVM_80_20[3]
+#Saving the best performing model 
+saveRDS(model_SVM_80, file = "model_SVM_80.rda")
+
+# 70% Train, 30% test data 
+output_SVM_70_30<-svm_model(train_70,test_30)
+model_SVM_70_30<-output_SVM_70_30[1]
+#model 
+model_SVM_70<-model_SVM_70_30$model
+Cm_SVM_test_30_Final<-output_SVM_70_30[2]
+CM_plot(Cm_SVM_test_30_Final)
+Cm_SVM_test_30_Final
+#AUC
+output_SVM_70_30[3]
+
+```
+
+## Logistic regression (Multinomial)
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+
+multinom_model<-function(train,test){
+fit_multinom <- multinom(label~., data = train, method = 'class')
+
+
+pred_multinom_train<-predict(fit_multinom, train, type = 'class')
+tab_multinom_train<-table(train$label, pred_multinom_train)
+
+#Misclassificatioin rate 
+mr_multinom_train<- sum(diag(tab_multinom_train)) / sum(tab_multinom_train)
+mr_multinom_train
+
+#Confusion matrix 
+
+Cm_multinom_train <- confusionMatrix(train$label,pred_multinom_train, mode = "everything", positive="1")
+
+# model on test data 
+
+pred_multinom_test<-predict(fit_multinom, test, type = 'class')
+tab_multinom_test<-table(test$label, pred_multinom_test)
+
+#Misclassificatioin rate 
+mr_multinom_test<- sum(diag(tab_multinom_test)) / sum(tab_multinom_test)
+mr_multinom_test
+
+#Confusion matrix 
+
+Cm_multinom_test <- confusionMatrix(test$label,pred_multinom_test, mode = "everything", positive="1")
+
+# create roc curve
+roc_multinom <- roc(as.numeric(test$label),as.numeric(pred_multinom_test))
+
+# calculate area under curve
+auc_multinom<-auc(roc_multinom)
+
+
+return(list(model=fit_multinom,Confusion_mat=Cm_multinom_test,AUC=auc_multinom ))
+}
+
+# 90% Train, 10% test data 
+output_multinom_90_10<-multinom_model(train_90,test_10)
+model_multinom_90_10<-output_multinom_90_10[1]
+#model 
+model_multinom_90<-model_multinom_90_10$model
+Cm_multinom_test_10_Final<-output_multinom_90_10[2]
+CM_plot(Cm_multinom_test_10_Final)
+Cm_multinom_test_10_Final
+#AUC
+output_multinom_90_10[3]
+
+# 80% Train, 20% test data 
+output_multinom_80_20<-multinom_model(train_80,test_20)
+model_multinom_80_20<-output_multinom_80_20[1]
+#model 
+model_multinom_80<-model_multinom_80_20$model
+Cm_multinom_test_20_Final<-output_multinom_80_20[2]
+CM_plot(Cm_multinom_test_20_Final)
+Cm_multinom_test_20_Final
+#AUC
+output_multinom_80_20[3]
+
+# 70% Train, 30% test data 
+output_multinom_70_30<-multinom_model(train_70,test_30)
+model_multinom_70_30<-output_multinom_70_30[1]
+#model 
+model_multinom_70<-model_multinom_70_30$model
+Cm_multinom_test_30_Final<-output_multinom_70_30[2]
+CM_plot(Cm_multinom_test_30_Final)
+
+#AUC
+Cm_multinom_test_30_Final
+output_multinom_70_30[3]
+```
+
+# Recalling the best saved model ( SVM trained on 80:20 train-test dataset )
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+Final_Model<-readRDS(file = "model_SVM_80.rda")
+
+```
+
+# Checking the training dataset result for unsupervised learning 
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+
+library("stringr")
+library(data.table)
+library("factoextra")
+library("tibble")
+library("cluster")
+
+
+head(data) # the data that I fed to supervised models 
+dim(data)
+
+data1<-data
+
+write.csv(data,file="processed_data.csv")
+
+#data_unsupervised_1 <- subset(data_unsupervised, select = -c(action,id))
+#data1<-data_unsupervised_1
+
+#sapply(data_unsupervised_1, class)
+
+# now conducting unsupervised model and checking accuracy 
+data1<-subset(data1, select = -c(label))
+scaled_data<-scale(data1)  # removed last label 
+
+dist_object_data<-get_dist(scaled_data)
+
+# Visualizing distance matrix
+viz_dist_data<-fviz_dist(dist_object_data, gradient = list(low = "#00AFBB", 
+                                                 mid = "white", high = "#FC4E07"))
+
+# viz_dist too large to display 42.1mb
+
+# Determining optimum number of cluster , method = "gap_stat" 
+optimal_cluster_gap_stat_data<-fviz_nbclust(scaled_data, kmeans,method = "gap_stat")
+optimal_cluster_gap_stat_data
+
+
+# Determining optimum number of cluster , method = "silhouette" (for average silhouette width) 
+optimal_cluster_silhouette_data<-fviz_nbclust(scaled_data, kmeans, 
+                                         method = "silhouette")
+optimal_cluster_silhouette_data
+
+
+
+# Determining optimum number of cluster (elbow method), method = "wss" (for total within sum of square)
+
+optimal_cluster_wss_data<-fviz_nbclust(scaled_data, kmeans, method = "wss")
+optimal_cluster_wss_data
+
+
+
+# K means for 6 clusters 
+set.seed(123)
+k_6_data <- kmeans(scaled_data, centers=6, nstart = 140, algorithm = c( "MacQueen"))
+
+cluster_activities_data<-table(k_6_data$cluster)
+cluster_activities_data
+# visualizing kmeans clusters 
+Activities_clusters_data<-fviz_cluster(k_6_data, data = scaled_data,
+             ggtheme = theme_minimal(),
+             main = "Kmeans Clustering of Activities(Training and test dataset)"
+             )
+Activities_clusters_data
+
+#table(k_6_data$cluster)
+
+#Confusion matrix 
+
+k_6_cm <- confusionMatrix(data$label,as.factor(k_6_data$cluster), mode = "everything", positive="1")
+
+k_6_cm$table
+k_6_cm
+
+roc_k_6 <- roc(as.numeric(data$label),as.numeric((k_6_data$cluster)))
+auc_K_6<-auc(roc_k_6 )
+
+# calculate area under curve
+auc_K_6
+
+# Now implementing Unsupervised SOM(Self Organizing Maps)
+# Self-organizing maps (SOMs) are a form of neural network and a beautiful way to partition complex data.
+# https://www.r-bloggers.com/2021/04/self-organizing-maps-in-r-supervised-vs-unsupervised/
+
+library(kohonen)
+set.seed(12345)
+g <- somgrid(xdim = 3, ydim = 2, topo = "rectangular" )
+
+#alpha is the learning weight by default vale is 0.05 to 0.01. These two numbers basically indicate amount of change.
+se<-seq(0.01,0.1,0.01)
+len<-length(se)
+
+accuracy_mat<-matrix(0,nrow = length(se),ncol = length(se))
+
+for (i in 1:len){
+  for (j in 1:len){
+    mat<- som(scaled_data,grid = g, alpha = c(se[i], se[j]),radius = 2) 
+    KSOM_cm <- confusionMatrix(data$label,as.factor(mat$unit.classif), mode = "everything", positive="1")
+    accuracy_mat[i,j]<-KSOM_cm$overall[[1]]
+  }
+  }
+
+val<-which(accuracy_mat == max(accuracy_mat), arr.ind = TRUE)
+r<- se[val[[1,1]]]  # alpha 1
+c<- se[val[[1,2]]]  # alpha 2 
+
+# Maximum accuracy 
+max(accuracy_mat)
+# r (0.05) and c (0.07) are alpha 1 and alpha 2 
+
+som_model<-som(scaled_data,grid = g, alpha = c(0.05, 0.07),radius = 2)
+KSOM_cm_final <- confusionMatrix(data$label,as.factor(som_model$unit.classif), mode = "everything", positive="1")
+
+KSOM_cm_final
+
+roc_som <- roc(as.numeric(data$label),as.numeric(as.factor(som_model$unit.classif)))
+auc_som<-auc(roc_som)
+
+# calculate area under curve
+auc_som
+
+```
+
+
+
+# Data  Preprocessing of Unlabelled dataset 
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+test_raw_data<-read.csv("WISDM_at_v2.0_unlabeled_raw.txt", header = TRUE,stringsAsFactors=F)
+dim(test_raw_data)
+```
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+# Sample 500 random
+set.seed(123)
+selected_rows<-sample(1:nrow(test_raw_data),500)
+
+## 500 samples
+test_raw_sample<-test_raw_data[selected_rows,]
+
+#dim(test_raw_sample)
+
+# Remove not label column
+
+unlabelled_df<-pre_process(test_raw_sample)
+
+unlabelled_df<-features_add(unlabelled_df)
+
+unlabelled_df2<-features_add2(unlabelled_df)
+#head(unlabelled_df2)
+
+un_data<-features_add3(unlabelled_df2)
+#head(un_data)
+# saving as dataframe
+un_data<-as.data.frame(un_data)
+
+
+un_df = subset(un_data, select = -c(label))
+
+
+
+#Using model to predict the data
+#pred_unlabelled<-predict(Final_Model, newdata = un_df, type = 'class')
+
+#tab_unlabelled<-table( pred_unlabelled)
+#tab_unlabelled
+
+
+
+```
+
+# Unsupervised Learning 
+# SOM with others 
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+scaled_stats<-scale(un_df)
+#summary(scaled_stats) # checking mean=0 etc for proper scaling 
+
+
+# Comparison: SVM model and SOM
+
+set.seed(123)
+g_som <- somgrid(xdim = 3, ydim = 2, topo = "rectangular" )
+# r (0.05) and c (0.07) are alpha 1 and alpha 2 calculated earlier 
+mat_som<- som(scaled_stats,grid = g_som, alpha = c(r,c),radius = 2)
+SOM_cm_SVM<- confusionMatrix(pred_unlabelled,as.factor(mat_som$unit.classif), mode = "everything", positive="1")
+acc_SVM<-SOM_cm_SVM$overall
+
+acc_SVM
+
+# Comparison: SOM  and Random Forest
+final_RF<-model_RF_90
+#Using model to predict the data
+pred_unlabelled_RF<-predict(final_RF, newdata = un_df, type = 'class')
+
+SOM_cm_RF <- confusionMatrix(pred_unlabelled_RF,as.factor(mat_som$unit.classif), mode = "everything", positive="1")
+acc_RF<-SOM_cm_RF$overall
+
+acc_RF
+
+
+
+# Comparison: Som and Multinomial Regression 
+final_multi<-model_multinom_90
+#Using model to predict the data
+pred_unlabelled_multi<-predict(final_multi, newdata = un_df, type = 'class')
+
+SOM_cm_MUL <- confusionMatrix(pred_unlabelled_multi,as.factor(mat_som$unit.classif), mode = "everything", positive="1")
+acc_MUL<-SOM_cm_MUL$overall
+
+acc_MUL
+
+# Comparison: Naive Bayes and SOM
+
+set.seed(123)
+final_NB<-model_NB_80
+#Using model to predict the data
+pred_unlabelled_NB<-predict(final_NB, newdata = un_df, type = 'class')
+SOM_cm_NB<- confusionMatrix(pred_unlabelled_NB,as.factor(mat_som$unit.classif), mode = "everything", positive="1")
+acc_NB<-SOM_cm_NB$overall
+
+acc_NB
+
+# Comparison: Decision Tress and SOM
+set.seed(123)
+final_DT<-model_DT_90
+#Using model to predict the data
+pred_unlabelled_DT<-predict(final_DT, newdata = un_df, type = 'class')
+SOM_cm_DT<- confusionMatrix(pred_unlabelled_DT,as.factor(mat_som$unit.classif), mode = "everything", positive="1")
+acc_DT<-SOM_cm_DT$overall
+
+acc_DT
+
+```
+# Unsupervised Learning 
+# K-means with others 
+
+```{r, echo=TRUE, eval=TRUE,warning=FALSE,fig.align="center"}
+
+scaled_stats<-scale(un_df)
+#summary(scaled_stats) # checking mean=0 etc for proper scaling 
+
+# K means for 6 clusters 
+set.seed(123)
+# SVM model
+final_SVM<-model_SVM_70
+#Using model to predict the data
+pred_unlabelled_SVM<-predict(final_SVM, newdata = un_df, type = 'class')
+
+
+set.seed(123)
+k_6_data_stats <- kmeans(scaled_stats, centers=6, nstart = 140, algorithm = c( "MacQueen"))
+
+cluster_activities_data_stats<-table(k_6_data_stats$cluster)
+
+# Comparison: SVM model and Kmeans
+
+K_cm_SVM<- confusionMatrix(pred_unlabelled_SVM,as.factor(k_6_data_stats$cluster), mode = "everything", positive="1")
+
+K_cm_SVM
+roc_k_6_unlabel <- roc(as.numeric(pred_unlabelled),as.numeric((k_6_data_stats$cluster)))
+auc_K_6_unlabel<-auc(roc_k_6_unlabel )
+
+# calculate area under curve
+auc_K_6_unlabel
+
+
+
+
+# Comparison: SOM  and Random Forest
+final_RF<-model_RF_90
+#Using model to predict the data
+pred_unlabelled_RF<-predict(final_RF, newdata = un_df, type = 'class')
+
+SOM_cm_RF <- confusionMatrix(pred_unlabelled_RF,as.factor(mat_som$unit.classif), mode = "everything", positive="1")
+acc_RF<-SOM_cm_RF$overall
+
+acc_RF
+
+
+
+# Comparison: Som and Multinomial Regression 
+final_multi<-model_multinom_90
+#Using model to predict the data
+pred_unlabelled_multi<-predict(final_multi, newdata = un_df, type = 'class')
+
+SOM_cm_MUL <- confusionMatrix(pred_unlabelled_multi,as.factor(mat_som$unit.classif), mode = "everything", positive="1")
+acc_MUL<-SOM_cm_MUL$overall
+
+acc_MUL
+
+# Comparison: Naive Bayes and SOM
+
+set.seed(123)
+final_NB<-model_NB_80
+#Using model to predict the data
+pred_unlabelled_NB<-predict(final_NB, newdata = un_df, type = 'class')
+SOM_cm_NB<- confusionMatrix(pred_unlabelled_NB,as.factor(mat_som$unit.classif), mode = "everything", positive="1")
+acc_NB<-SOM_cm_NB$overall
+
+acc_NB
+
+# Comparison: Decision Tress and SOM
+set.seed(123)
+final_DT<-model_DT_90
+#Using model to predict the data
+pred_unlabelled_DT<-predict(final_DT, newdata = un_df, type = 'class')
+SOM_cm_DT<- confusionMatrix(pred_unlabelled_DT,as.factor(mat_som$unit.classif), mode = "everything", positive="1")
+acc_DT<-SOM_cm_DT$overall
+
+acc_DT
+
+```
+
+
+# Code Appendix
+```{r ref.label=knitr::all_labels(), echo = T, eval = F,tidy = TRUE}
+```
