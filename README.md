@@ -13,7 +13,8 @@ methods achieved very high accuracy(over 95%) on labeled datasets as against 65%
 datasets with the same selected features.
 
 ## Statistical Problem
-Prediction of physical activity Table 1. from tri-axial data recorded by accelerometer and comparing different prediction models and methods
+Prediction of physical activity Table 1. from tri-axial data recorded by accelerometer and comparing different prediction models and methods.
+
 ![Categories](https://github.com/biswas006/Classification-Models/blob/main/Snapshots%20and%20Pics/Snapshot-Six%20Activities%20for%20prediction.png)
 
 ## Data and Tools
@@ -55,7 +56,7 @@ K-Means clustering and artificial neural network based clustering technique Self
 Accuracy, Kappa, Confusion Matrix, Precision, Recall, F1 Score were checked for all the models for different train-test datasets.
 
 ## Results and Discussion
-Almost all the sepervised learning models performed over 95% accuracy and other metrics, the Multinomial Logistic Regression performed the best. Unsupervised models could not match up the levels as expected and SOM performed better than K-means.
+Almost all the supervised learning models performed over 95% accuracy and similarly for other metrics, the Random Forest and Multinomial Logistic Regression performed the best. Unsupervised models could not match up the levels as expected and SOM performed better than K-means.
 
 ![Results](https://github.com/biswas006/Classification-Models/blob/main/Snapshots%20and%20Pics/Model%20Performance.png)
 
